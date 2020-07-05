@@ -7,6 +7,8 @@ def get_dimensions(elements):
     """ Returns the number of elements in each dimension as a list, and implicitly also how many nested dimensions there are.
     Dimensions and ranks are in "little endian".
     The most inner / minor dimension (least significant) comes first and the most outer / major dimension (most significant) last.
+    ----------
+    elements : The nested lists.
     """
     dimensions = []
     inner_elements = elements
@@ -22,8 +24,8 @@ def flatten_one_dimension(elements):
 def flatten_dimensions(elements, number_of_dimensions=None):
     """ Unrolls nested lists into one flat list.
     ----------
-    elements : The  nested lists
-    number_of_dimensions : How many of the outer dimensions to peel of, leaving the inner dimensions nested
+    elements : The nested lists.
+    number_of_dimensions : How many of the outer dimensions to peel of, leaving the inner dimensions nested.
     """
     dimensions = get_dimensions(elements)
     if number_of_dimensions == None:
@@ -39,7 +41,7 @@ def structure_dimensions(dimensions, elements):
     """ Rolls a flat list back into nested lists.
     ----------
     dimensions : The number of elements in each dimension, as returned by get_dimensions(elements).
-    elements : The flat list
+    elements : The flat list.
     """
     for dimension_index in range(0, len(dimensions)-1):
         elements = structure_one_dimension(dimensions[dimension_index], elements)
@@ -47,6 +49,10 @@ def structure_dimensions(dimensions, elements):
 
 def flatten_and_structure_dimensions(op, parameters, number_of_dimensions=None):
     """ Unrolls nested lists into one flat lists, applies the operation and rolls the resulting flat list back into nested lists.
+    ----------
+    op : Operation to apply to the tuple of flat lists, resulting in one flat list.
+    parameters : The tuple flat lists.
+    number_of_dimensions : How many of the outer dimensions to peel of, leaving the inner dimensions nested.
     """
     multi_args = isinstance(parameters, tuple)
     dimensions_and_arguments = map(lambda parameter: flatten_dimensions(parameter, number_of_dimensions), parameters if multi_args else [parameters])
