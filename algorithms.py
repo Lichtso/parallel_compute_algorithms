@@ -144,3 +144,57 @@ def vector_transformation(matrix_a, vector_b):
     # Optimization: Transpose and unpack the vector
     # return src_transposition([1, 0], transformed_vector)[0]
     return utils.flatten_dimensions(transformed_vector)[1]
+
+def fft(elements, forward):
+    """ Calculates the discrete fourier transform in O(n * log(n)).
+    Note: The input size is restriced to powers of two.
+    ----------
+    elements : Complex element list.
+    forward : If true the result will be scaled down by a factor of 1/len(elements).
+    """
+    radix = 2
+    radix_stride = len(elements)/radix
+    input_indices = range(0, radix_stride)
+    gather_permutation_pairs = primitives.elementwise(lambda (input_index): [input_index, input_index+radix_stride], (input_indices), 1)
+    gather_permutation = utils.flatten_dimensions(gather_permutation_pairs)[1]
+    stage_size = 1
+    while (stage_size < len(elements)):
+        mask = stage_size-1
+        indices_in_block = primitives.elementwise(lambda (index): index&mask, (input_indices), 1)
+        block_base_indices = primitives.elementwise(lambda (input_index, index_in_block): input_index-index_in_block, (input_indices, indices_in_block), 1)
+        offsets = primitives.elementwise(lambda (block_base_index): block_base_index*radix, (block_base_indices), 1)
+        output_indices = primitives.elementwise(lambda (index_in_block, offset): index_in_block+offset, (indices_in_block, offsets), 1)
+        scatter_permutation_pairs = primitives.elementwise(lambda (output_index): [output_index, output_index+stage_size], (output_indices), 1)
+        scatter_permutation = utils.flatten_dimensions(scatter_permutation_pairs)[1]
+        factor = 0.5/stage_size
+        turns = primitives.elementwise(lambda (index_in_block): index_in_block*factor, (indices_in_block), 1)
+        twiddle_factors = primitives.elementwise(lambda (turns): utils.twiddle_factor(turns), turns)
+        dimensions = [radix, len(elements)/radix]
+        permutated_elements = primitives.gather(gather_permutation, elements)
+        permutated_pairs = utils.structure_dimensions(dimensions, permutated_elements)
+        permutated_processed_pairs = primitives.elementwise(lambda ((element_a, element_b), twiddle_factor): utils.butterfly_op(element_a, element_b, twiddle_factor), (permutated_pairs, twiddle_factors), 1)
+        permutated_processed_elements = utils.flatten_dimensions(permutated_processed_pairs)[1]
+        processed_elements = primitives.scatter(scatter_permutation, permutated_processed_elements)
+        elements = processed_elements
+        stage_size *= radix
+    if forward:
+        factor = 1.0/len(elements)
+        return primitives.elementwise(lambda (element): element*factor, (elements), 1)
+    else:
+        return elements
+
+def convolution(elements_a, elements_b):
+    """ Calculates the convolution of two signals in O(n * log(n)).
+    Note: The input size is restriced to powers of two.
+    ----------
+    elements_a : Real or complex element list.
+    elements_b : Real or complex element list.
+    """
+    a_is_complex = isinstance(elements_a[0], complex)
+    b_is_complex = isinstance(elements_b[0], complex)
+    factor = len(elements_a)
+    transformed_elements_a = fft(elements_a, True)
+    transformed_elements_b = fft(elements_b, True)
+    transformed_result = primitives.elementwise(lambda (a, b): a*b*factor, (transformed_elements_a, transformed_elements_b), 1)
+    result = fft(transformed_result, False)
+    return result if a_is_complex or b_is_complex else map(lambda element: element.real, result)
