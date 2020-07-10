@@ -1,3 +1,16 @@
+import cmath
+
+def twiddle_factor(turns):
+    """ Calculates the FFT twiddle factor of an angle measured in turns (not radian).
+    """
+    return cmath.exp(-2.0j*cmath.pi*turns)
+
+def butterfly_op(element_a, element_b, twiddle_factor):
+    """ A radix-2 FFT.
+    """
+    aux = element_b*twiddle_factor
+    return [element_a+aux, element_a-aux]
+
 def condition_to_flag(condition):
     """ Cast boolean to unsigned int.
     """

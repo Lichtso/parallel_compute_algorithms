@@ -145,6 +145,111 @@ def vector_transformation(matrix_a, vector_b):
     # return src_transposition([1, 0], transformed_vector)[0]
     return utils.flatten_dimensions(transformed_vector)[1]
 
+def selection(slot_indices, elements_per_slot):
+    """ A multiplexer. It selects each element from a tuple of slots by a slot index.
+    ----------
+    slot_indices : The index of the slot each resulting element is coming from.
+    elements_per_slot : A tuple of element lists, one element list for each slot.
+    """
+    return primitives.elementwise(lambda slot_index_and_slots: primitives.gather(slot_index_and_slots[0:1], slot_index_and_slots[1:])[0], tuple([slot_indices]+elements_per_slot), 1)
+
+def filter(keep_element_flags, elements):
+    """ Discard elements from a list of elements and condense the remaining elements back into a list of consecutive elements without gaps.
+    It also returns how many elements remain (were not discared).
+    ----------
+    keep_element_flags : A boolean flag specifing for each element if it should be kept (not discared).
+    elements : List of elements.
+    """
+    (indices, number_of_remaining_elements) = primitives.integral(-1, lambda (a, b): a+b, keep_element_flags, 0)
+    elements_to_keep = primitives.scatter(indices, elements, keep_element_flags, number_of_remaining_elements)
+    return (number_of_remaining_elements, elements_to_keep)
+
+def lsb_radix_sort(total_bit_width, bit_width_per_pass, elements):
+    """ Sorts a list of key-value-pairs into partitions defined by their unsigned integer keys.
+    ----------
+    total_bit_width : Bit width of the keys, log2(max(keys)).
+    bit_width_per_pass : How many bits to sort in one pass.
+    elements : List of key-value-pairs.
+    """
+    for bit_shift in range(0, total_bit_width, bit_width_per_pass):
+        buckets_mask = (1<<bit_width_per_pass)-1
+        keys = primitives.elementwise(lambda (element): element[0], (elements), 1)
+        shifted_keys = primitives.elementwise(lambda (key): key>>bit_shift, (keys), 1)
+        in_which_bucket_each_element_belongs = primitives.elementwise(lambda (shifted_key): shifted_key&buckets_mask, (shifted_keys), 1)
+        number_of_elements_in_lower_buckets = 0
+        indices_per_bucket = []
+        for bucket_index in range(0, 1<<bit_width_per_pass):
+            belongs_in_this_bucket_flags = primitives.elementwise(lambda (in_which_bucket_this_element_belongs): utils.condition_to_flag(in_which_bucket_this_element_belongs == bucket_index), (in_which_bucket_each_element_belongs), 1)
+            (indices_inside_this_bucket, number_of_elements_in_lower_buckets) = primitives.integral(-1, lambda (a, b): a+b, belongs_in_this_bucket_flags, number_of_elements_in_lower_buckets)
+            indices_per_bucket.append(indices_inside_this_bucket)
+        indices = selection(in_which_bucket_each_element_belongs, indices_per_bucket)
+        elements = primitives.scatter(indices, elements)
+    return elements
+
+def partition_edges(max_key_plus_one, keys):
+    """ Finds the edges of partitions (where the key changes).
+    This returns two lists of flags which are true if a partition begins or ends at this element respectively.
+    It also returns two lists of indices where a partition begins or ends for each partition key respectively.
+    ----------
+    max_key_plus_one : max(keys)+1.
+    keys : List of unsigned integer keys.
+    """
+    indices = range(0, len(keys))
+    begin_edge_differences = derivative(-1, lambda (a, b): b-a, keys)
+    is_first_edge_flags = primitives.elementwise(lambda (index): index == 0, (indices), 1)
+    is_begin_edge_flags = primitives.elementwise(lambda (difference): difference != 0, (begin_edge_differences), 1)
+    begin_edge_flags = primitives.elementwise(lambda (is_first_edge, is_begin_edge): utils.condition_to_flag(is_first_edge or is_begin_edge), (is_first_edge_flags, is_begin_edge_flags), 1)
+    end_edge_differences = derivative(1, lambda (a, b): b-a, keys)
+    is_last_edge_flags = primitives.elementwise(lambda (index): index == len(keys)-1, (indices), 1)
+    is_end_edge_flags = primitives.elementwise(lambda (difference): difference != 0, (end_edge_differences), 1)
+    end_edge_flags = primitives.elementwise(lambda (is_last_edge, is_end_edge): utils.condition_to_flag(is_last_edge or is_end_edge), (is_last_edge_flags, is_end_edge_flags), 1)
+    begin_index_per_partition = primitives.scatter(keys, indices, begin_edge_flags, max_key_plus_one)
+    end_indices = primitives.elementwise(lambda (index): index+1, (indices), 1)
+    end_index_per_partition = primitives.scatter(keys, end_indices, end_edge_flags, max_key_plus_one)
+    return (begin_edge_flags, end_edge_flags, begin_index_per_partition, end_index_per_partition)
+
+def partitioned_counting(max_key_plus_one, keys):
+    """ Counts the number of elements in each partition (sharing the same key).
+    It returns a list of the element count for each partition key.
+    ----------
+    max_key_plus_one : max(keys)+1.
+    keys : List of unsigned integer keys.
+    """
+    (begin_edge_flags, end_edge_flags, begin_index_per_partition, end_index_per_partition) = partition_edges(max_key_plus_one, keys)
+    return primitives.elementwise(lambda (begin_index, end_index): end_index-begin_index, (begin_index_per_partition, end_index_per_partition), 1)
+
+def partitioned_indices(max_key_plus_one, keys):
+    """ Calculates the index of each element in its partition.
+    ----------
+    max_key_plus_one : max(keys)+1.
+    keys : List of unsigned integer keys.
+    """
+    (begin_edge_flags, end_edge_flags, begin_index_per_partition, end_index_per_partition) = partition_edges(max_key_plus_one, keys)
+    number_of_elements_per_partition = primitives.elementwise(lambda (begin_index, end_index): end_index-begin_index, (begin_index_per_partition, end_index_per_partition), 1)
+    indices = range(0, len(keys))
+    number_of_elements_of_the_partition_each_element_is_in = primitives.gather(keys, number_of_elements_per_partition)
+    index_offsets = primitives.elementwise(lambda (number_of_elements_of_the_partition_this_element_is_in): 1-number_of_elements_of_the_partition_this_element_is_in, (number_of_elements_of_the_partition_each_element_is_in), 1)
+    index_offsets_and_begin_edge_flags = src_transposition([1, 0], [index_offsets]+[begin_edge_flags])
+    const_one = [1]*len(keys)
+    indices_to_integrate = selection(begin_edge_flags, [const_one, index_offsets])
+    (negative_indices, zero) = primitives.integral(1, lambda (a, b): a+b, indices_to_integrate, 0)
+    return primitives.elementwise(lambda (negative_index, index_offset): negative_index-index_offset, (negative_indices, index_offsets), 1)
+
+def partitioned_binning(max_key_plus_one, elements):
+    """ Calculates the sum of values in each partition.
+    It returns a list of the sum for each partition key (a histogram).
+    ----------
+    max_key_plus_one : max(keys)+1.
+    elements : List of key-value-pairs.
+    """
+    keys = primitives.elementwise(lambda (element): element[0], (elements), 1)
+    (begin_edge_flags, end_edge_flags, begin_index_per_partition, end_index_per_partition) = partition_edges(max_key_plus_one, keys)
+    values = primitives.elementwise(lambda (element): element[1], (elements), 1)
+    (values_integral, total_value_sum) = primitives.integral(-1, lambda (a, b): a+b, values, 0)
+    partition_begin_values = primitives.gather(begin_index_per_partition, values_integral)
+    partition_end_values = primitives.gather(end_index_per_partition, values_integral+[total_value_sum]) # TODO: How to handle the extra element at the end?
+    return primitives.elementwise(lambda (begin_value, end_value): end_value-begin_value, (partition_begin_values, partition_end_values), 1)
+
 def fft(elements, forward):
     """ Calculates the discrete fourier transform in O(n * log(n)).
     Note: The input size is restriced to powers of two.
